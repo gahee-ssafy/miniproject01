@@ -2,11 +2,11 @@
 
 ## 프로젝트 구조
 ```
-ai-archive-system/
+ai-document-archive/
 ├── app.py                # 메인 애플리케이션
 ├── requirements.txt      # 패키지 목록
 ├── archive.db           # SQLite 데이터베이스 (자동 생성)
-└── test-image.png       # 테스트용 샘플 이미지
+└── test-image.jpg       # 테스트용 샘플 이미지
 ```
 
 ## 빠른 시작
