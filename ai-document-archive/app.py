@@ -169,11 +169,11 @@ def get_ocr_text(img, ocr_model, is_receipt=False):
     processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
     if is_receipt:
-        # 슬라이딩 윈도우 알고리즘 적용 (영수증 한정)
-        # 잘라서 봐야 세세하게 보입니다. 
-        # 시간소요가 더 걸릴 예정임으로 영수증 한정으로 계획함. 
- 
-        ph = processed_img.shape[:2]
+        """ 슬라이딩 윈도우 알고리즘 적용 (영수증 한정)
+        장점: 잘라서 봐야 세세하게 보입니다. 
+        단점: 시간소요가 늘어납니다."""
+
+        ph, pw = processed_img.shape[:2]
         win_h, overlap, texts = ph // 3, 100, []
         for i in range(3):
             start_y, end_y = max(0, i * win_h - overlap), min(ph, (i + 1) * win_h + overlap)
