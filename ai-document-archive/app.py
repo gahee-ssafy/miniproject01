@@ -27,11 +27,10 @@ from kiwipiepy import Kiwi
 
 # 환경 설정
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-# [DEBUG] 하드웨어 가속 라이브러리의 충돌을 방지하는 설정
 os.environ['DNNL_MAX_CPU_ISA'] = 'AVX2'
 
 # ---------------------------------------------------------
-# 1. DB 모델 및 초기화
+# 1. DB: 없으면 만들고, 있으면 놔둬라
 # ---------------------------------------------------------
 class Document(SQLModel, table=True):
     __table_args__ = {"extend_existing": True} 
@@ -48,7 +47,13 @@ class Document(SQLModel, table=True):
 
 engine = create_engine("sqlite:///archive.db")
 SQLModel.metadata.create_all(engine)
-kiwi = Kiwi()
+kiwi = Kiwi() # Q1 이거 왜 하지? 
+# 키위는 "한국어" 형태소 분석기입니다. 
+# 영수증이나 문서에서 명사 키워드를 추출할 때 사용됩니다. 
+# 예를 들어, "삼성전자 갤럭시 S21 128GB"라는 텍스트가 있으면, 키위는 "삼성전자", "갤럭시", "S21", "128GB" 같은 명사들을 추출해줍니다. 
+# 이렇게 추출된 키워드들은 검색이나 분류에 활용될 수 있습니다.
+# Q2 왜 처음에 해야하는데? 
+# 키위 객체를 미리 생성해두면, 이후에 형태소 분석이 필요할 때마다 빠르게 사용할 수 있습니다. 
 
 # ---------------------------------------------------------
 # 2. AI 모델 로딩 (캐싱)
@@ -68,11 +73,10 @@ def load_all_models():
 # ---------------------------------------------------------
 # 3. 보조 분석 함수 (정규표현식 영수증 추출 추가)
 # ---------------------------------------------------------
-
-def extract_receipt_info(text):
-    """영수증 텍스트에서 정규표현식을 통해 정형화된 정보를 추출합니다."""
+# 영수증 추출
+def extract_receipt_info(text):    
     # 사업자 번호 추출
-    biz_num_match = re.search(r'\d{3}[ -]?\d{2}[ -]?\d{5}', text)
+    biz_num_match = re.search(r'\d{3}[-\s]?\d{2}[-\s]?\d{5}', text)
     # 날짜 
     date_match = re.search(r'\d{4}-\d{2}-\d{2}', text)
     # 금액
@@ -81,10 +85,6 @@ def extract_receipt_info(text):
     item_pattern = r'(\d{2,})?\s*([가-힣A-Z\(\)\[\]][가-힣A-Z0-9\(\)\[\]\-~ ]+?)(?=\s+\d+)'
     items = re.findall(item_pattern, text)
     
-    # --- 출력 확인 구간 (추가된 부분) ---
-    # print(f"\n[DEBUG] 1. 정규식 추출 결과 (items): {items}") 
-    # -------------------------------
-
     res = []
     if biz_num_match: res.append(f"🏢 사업자 등록번호: {biz_num_match.group()}")
     print(f"\n[DEBUG] 사업자: {biz_num_match.group()}") 
@@ -128,7 +128,7 @@ def extract_receipt_info(text):
             
     return " | ".join(res) if res else "정보 추출 실패"
 
-
+# 사진 추출
 def extract_photo_metadata(image):
     metadata = {'width': image.width, 'height': image.height, 'camera_model': '정보 없음', 'taken_date': '정보 없음', 'location_address': '정보 없음', 'lat': None, 'lng': None}
     try:
@@ -156,7 +156,7 @@ def extract_photo_metadata(image):
     return metadata
 
 # ---------------------------------------------------------
-# 4. 메인 프로세싱 함수 (수정됨)
+# 4. 메인 프로세싱 함수 (이미지 전처리 -> OCR 추출 -> 텍스트 분석)
 # ---------------------------------------------------------
 def process_document(uploaded_file, models):
     (dit_p, dit_m, ocr, obj_p, obj_m, sum_t, sum_m, emb_m) = models
@@ -168,33 +168,36 @@ def process_document(uploaded_file, models):
     inputs = dit_p(images=orig_img, return_tensors="pt")
     label = dit_m.config.id2label[dit_m(**inputs).logits.argmax(-1).item()].lower()
     
-    # 2. OCR 수행 (분류 및 텍스트 확보)
+    # 2. OCR 전처리 및 수행=====================================
     img_cv = cv2.cvtColor(np.array(orig_img), cv2.COLOR_RGB2BGR)
-    ocr_res = ocr.ocr(img_cv, cls=False)
-    full_text = " ".join([line[1][0] for line in ocr_res[0]]) if ocr_res and ocr_res[0] else ""
+    
+    # [보정] 여백 + 확대 + 이진화
+    img_padded = cv2.copyMakeBorder(img_cv, 40, 40, 100, 40, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+    h, w = img_padded.shape[:2]
+    img_up = cv2.resize(img_padded, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
+    gray = cv2.cvtColor(img_up, cv2.COLOR_BGR2GRAY)
+    
+    # 중간 숫자 유실 방지를 위한 미세한 블러 추가 (노이즈 제거)
+    # 기계적인 판단: 숫자가 너무 가늘면 블러를 건너뛰고, 노이즈가 많으면 적용하십시오.
+    processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+    ocr_res = ocr.ocr(processed_img, cls=True) 
+    full_text = "\n".join([line[1][0] for line in ocr_res[0]]) if ocr_res and ocr_res[0] else ""
+    # =======================================================
 
     # 문서/사진 판별
     is_doc = any(x in label for x in ['receipt', 'invoice', 'form', 'letter']) or len(full_text) > 40
     
     if is_doc:
         doc_type = "Document"
-        # 이미지 전처리 (이진화 등)
-        # 안녕하세요? 진화씨? 
-        height, width = img_cv.shape[:2]
-        img_cv_up = cv2.resize(img_cv, (width * 2, height * 2), interpolation=cv2.INTER_LANCZOS4)
-        gray = cv2.cvtColor(img_cv_up, cv2.COLOR_BGR2GRAY)
-        _, processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # 3. 요약 로직 분기 (영수증 vs 일반 문서)
         receipt_summary = extract_receipt_info(full_text)
         
         if ('receipt' in label or 'invoice' in label) and receipt_summary:
-            # 영수증이면 정규표현식으로 정형화된 요약 사용
             final_summary = f"🧾 [영수증] {receipt_summary}"
         else:
-            # 일반 문서면 KoBART AI 요약 사용
             try:
-                s_inputs = sum_t([full_text], max_length=128, return_tensors="pt", truncation=True)
+                # KoBART 입력 제한 (정합성 유지)
+                s_inputs = sum_t([full_text[:500]], max_length=128, return_tensors="pt", truncation=True)
                 s_ids = sum_m.generate(s_inputs["input_ids"], num_beams=4, max_length=128)
                 final_summary = sum_t.decode(s_ids[0], skip_special_tokens=True).strip()
             except:
@@ -203,18 +206,19 @@ def process_document(uploaded_file, models):
         kw_list = [t.form for t in kiwi.tokenize(full_text) if t.tag in ['NNG', 'NNP']]
         final_keywords = ", ".join(list(dict.fromkeys(kw_list))[:10])
         structured_data = {}
+        # 여기서 processed_img는 이미 생성된 이진화 이미지를 그대로 유지
     else:
         doc_type = "Photo"
-        processed_img = np.array(orig_img)
+        # 사진일 때는 원본 이미지를 시각적으로 보여주는 것이 진실에 가깝습니다.
+        processed_img = np.array(orig_img) 
         meta = extract_photo_metadata(raw_img)
-        # 객체 탐지
+        
         obj_inputs = obj_p(images=orig_img, return_tensors="pt")
         obj_outputs = obj_m(**obj_inputs)
         target_sizes = torch.tensor([orig_img.size[::-1]])
         results = obj_p.post_process_object_detection(obj_outputs, target_sizes=target_sizes, threshold=0.7)[0]
         objs = list(set([obj_m.config.id2label[l.item()] for l in results["labels"]]))
-        
-        final_keywords = generate_photo_keywords(meta, objs)
+        final_keywords = extract_photo_metadata(meta, objs)
         final_summary = f"📸 [{meta['taken_date']}] 촬영 사진. 탐지: {', '.join(objs)}"
         structured_data = {'exif': meta, 'objects': objs}
 
