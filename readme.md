@@ -63,12 +63,13 @@ pip install -r requirements.txt
 1. 이미지 전처리 </br>
    - 이미지 전처리 파이프라인 최적화 (Advanced Pre-processing)
    - OCR 데이터 추출 정밀도 향상 (Sliding Window 도입)
-   - 불용어 필터링
-   - 정규표현식
+   - 정규표현식 (Regex)
+   - 상태 기반 영역 추출 (Context-Aware Extracion)
 
    ### 이미지 전처리 결론
 
    "물리적 이미지 한계를 슬라이딩 윈도우 알고리즘으로 극복하고, 슬라이딩 윈도우를 통해 영수증 데이터의 정교함을 확보함."
+   또한, "정형 데이터(날짜, 번호)는 **Regex**로 찾고, 비정형 데이터(품목)는 **문맥**으로 찾았습니다. 그로 인해 데이터 인계 성공"
 
 2. Dit 기반 라우팅
 3. Debug Print

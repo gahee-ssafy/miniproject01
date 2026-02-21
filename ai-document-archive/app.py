@@ -75,58 +75,60 @@ def load_all_models():
 # ---------------------------------------------------------
 # 영수증 추출
 def extract_receipt_info(text):    
+    # 1. 규격 데이터 추출 - REGEX(찾기)
     # 사업자 번호 추출
     biz_num_match = re.search(r'\d{3}[-\s]?\d{2}[-\s]?\d{5}', text)
     # 날짜 
     date_match = re.search(r'\d{4}-\d{2}-\d{2}', text)
     # 금액
     total_price_match = re.search(r'(?:합\s*계|결제금액|총액)\s*[:\s]*([\d\s,]+)', text)
-    # 품목 
-    item_pattern = r'(\d{2,})?\s*([가-힣A-Z\(\)\[\]][가-힣A-Z0-9\(\)\[\]\-~ ]+?)(?=\s+\d+)'
-    items = re.findall(item_pattern, text)
     
     res = []
     if biz_num_match: res.append(f"🏢 사업자 등록번호: {biz_num_match.group()}")
-    print(f"\n[DEBUG] 사업자: {biz_num_match.group()}") 
     if date_match: res.append(f"📅 날짜: {date_match.group()}")
     if total_price_match:
         price = total_price_match.group(1).replace(" ", "").replace(",", "").strip()
         res.append(f"💰 총합계: {int(price):,}원")
     
-    if items:
-        valid_items = []
-        # 1. 불용어 리스트 대폭 강화 (OCR 오타 대응)
-        stopwords = [
-        # 결제 관련
-        '물품가액', '과세', '부가세', '부가서', '상품가격', '합계', '금액', '수량', '단가',
-        # 점포/주소 관련 (이번에 추가!)
-        '이마트', 'KMART', '대한민국', '고양시', '덕이동', '주소', '대표자', '전화',
-        # 안내 문구 관련 (이번에 추가!)
-        '환불', '환물', '교환', '편리', '등록', '영수증', '문의', '감사'
-    ]
+    
+    # 2. 비정형 데이터 추출 - 문맥활용
+    lines = text.split('\n')
+    valid_items = []
+    
+    # TODO: 불용어 필터링 - [1차] DEBUG해서 나오는 노이즈
+    exclude_keywords = []
+
+    # [2차] 품목이 시작되는 지점 탐색 - [1차] 노이즈가 너무 많아! 
+    start_collecting = False
+    for line in lines:
+        # '상품코드'나 '금액'이라는 단어가 보이면 그 다음 줄부터 진짜 품목으로 간주
+        if any(k in line for k in ['상품코드', '단가', '수량']):
+            start_collecting = True
+            continue
         
-        for it in items:
-            raw_name = it[1].strip()
-            
-            # [핵심 로직] 공백을 제거한 상태에서 비교합니다.
-            # '합 계' -> '합계'로 변환해서 체크하니까 훨씬 잘 걸려요!
-            clean_check_name = raw_name.replace(" ", "")
-            
-            # 불용어 중 하나라도 포함되어 있으면 패스!
-            if any(stop.replace(" ", "") in clean_check_name for stop in stopwords):
+        # '합계'나 '부가세'가 나오면 품목 섹션이 끝난 것으로 간주
+        if any(k in line for k in ['합계', '부가세', '과세']):
+            start_collecting = False 
+            continue
+
+        if start_collecting and re.search(r'[가-힣]+', line):
+            # 불용어 필터링
+            if any(key in line for key in exclude_keywords):
                 continue
             
-            valid_items.append(raw_name)
-        
-        # 중복 제거 (set 활용)
-        valid_items = list(dict.fromkeys(valid_items))
-
-        if valid_items:
-            item_str = f"🛒 품목: {valid_items[0]} 등 {len(valid_items)}건"
-            res.append(item_str)
-            print(f"[DEBUG] 최종 정제된 품목들: {valid_items}")
+            # 숫자/특수문자 제거
+            clean_name = re.sub(r'[0-9*#\-\.\[\]\{\}\<\>]', '', line).strip()
+            clean_name = re.sub(r'\s+', ' ', clean_name)
             
+            if len(clean_name) > 1:
+                valid_items.append(clean_name)
+
+    if valid_items:
+        valid_items = list(dict.fromkeys(valid_items))
+        res.append(f"🛒 품목: {valid_items[0]} 등 {len(valid_items)}건")
+        
     return " | ".join(res) if res else "정보 추출 실패"
+
 
 # 사진 추출
 def extract_photo_metadata(image):
