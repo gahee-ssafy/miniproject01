@@ -87,7 +87,8 @@ def extract_receipt_info(text):
     if biz_num_match: res.append(f"🏢 사업자 등록번호: {biz_num_match.group()}")
     if date_match: res.append(f"📅 날짜: {date_match.group()}")
     if total_price_match:
-        price = total_price_match.group(1).replace(" ", "").replace(",", "").strip()
+        price_raw = total_price_match.group(1)
+        price = re.sub(r'[^\d]', '', price_raw)
         res.append(f"💰 총합계: {int(price):,}원")
     
     
@@ -95,9 +96,6 @@ def extract_receipt_info(text):
     lines = text.split('\n')
     valid_items = []
     
-    # TODO: 불용어 필터링 - [1차] DEBUG해서 나오는 노이즈
-    exclude_keywords = []
-
     # [2차] 품목이 시작되는 지점 탐색 - [1차] 노이즈가 너무 많아! 
     start_collecting = False
     for line in lines:
@@ -112,10 +110,6 @@ def extract_receipt_info(text):
             continue
 
         if start_collecting and re.search(r'[가-힣]+', line):
-            # 불용어 필터링
-            if any(key in line for key in exclude_keywords):
-                continue
-            
             # 숫자/특수문자 제거
             clean_name = re.sub(r'[0-9*#\-\.\[\]\{\}\<\>]', '', line).strip()
             clean_name = re.sub(r'\s+', ' ', clean_name)
@@ -126,7 +120,6 @@ def extract_receipt_info(text):
     if valid_items:
         valid_items = list(dict.fromkeys(valid_items))
         res.append(f"🛒 품목: {valid_items[0]} 등 {len(valid_items)}건")
-        
     return " | ".join(res) if res else "정보 추출 실패"
 
 
@@ -157,24 +150,21 @@ def extract_photo_metadata(image):
     except: pass
     return metadata
 
-# ---------------------------------------------------------
-# pipeline: 이미지 전처리 -> OCR 추출 -> 텍스트 분석
-# ---------------------------------------------------------
-# 이미지 전처리 및 OCR
+# OCR: 영수증, 일반문서 각각 다르게 추출함. 
 def get_ocr_text(img, ocr_model, is_receipt=False):
-    """이미지에서 텍스트를 정밀하게 추출합니다."""
-    # [기본 전처리] 여백 -> 확대 -> 흑백/이진화
+    """영수증은 빠른 출력을, 일반 문서는 정밀 정렬을 수행합니다."""
+    # 1. 전처리 (공통): 숫자의 선명도를 위해 2배 확대 및 이진화 유지
     img_padded = cv2.copyMakeBorder(img, 40, 40, 100, 40, cv2.BORDER_CONSTANT, value=[255, 255, 255])
     h, w = img_padded.shape[:2]
     img_up = cv2.resize(img_padded, (w * 2, h * 2), interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(img_up, cv2.COLOR_BGR2GRAY)
     processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-    if is_receipt:
-        """ 슬라이딩 윈도우 알고리즘 적용 (영수증 한정)
-        장점: 잘라서 봐야 세세하게 보입니다. 
-        단점: 시간소요가 늘어납니다."""
+    line_threshold = 20 
+    all_raw_results = []
 
+    if is_receipt:
+        # [영수증 모드] 머리-배-다리 슬라이딩 후 즉시 반환
         ph, pw = processed_img.shape[:2]
         win_h, overlap, texts = ph // 3, 100, []
         for i in range(3):
@@ -182,70 +172,68 @@ def get_ocr_text(img, ocr_model, is_receipt=False):
             res = ocr_model.ocr(processed_img[start_y:end_y, :], cls=True)
             if res and res[0]:
                 for line in res[0]:
-                    if line[1][0] not in texts: texts.append(line[1][0])
+                    # 숫자를 포함한 원문 그대로(line[1][0]) 중복 체크 후 추가
+                    if line[1][0] not in texts: 
+                        texts.append(line[1][0])
+        
+        # 확률적 계산일 뿐 진실을 담보하지 않습니다.
         return "\n".join(texts), processed_img
+    
     else:
-        # 일반 모드
+        # [일반 모드] 정밀 좌표 정렬 수행
         res = ocr_model.ocr(processed_img, cls=True)
-        text = "\n".join([l[1][0] for l in res[0]]) if res and res[0] else ""
-        return text, processed_img
+        if res and res[0]:
+            all_raw_results = res[0]
+
+        # Y좌표(행) -> X좌표 순으로 인간의 독해 순서 정렬
+        sorted_results = sorted(
+            all_raw_results, 
+            key=lambda x: (x[0][0][1] // line_threshold, x[0][0][0])
+        )
+
+        final_texts = []
+        seen = set()
+        for res in sorted_results:
+            text_content = res[1][0]
+            if text_content not in seen:
+                final_texts.append(text_content)
+                seen.add(text_content)
+
+        # 확률적 계산일 뿐 진실을 담보하지 않습니다.
+        return "\n".join(final_texts), processed_img
+    
 
 
-# 메인 프로세스 함수 (보도자료 요약 생성 제어 로직 적용)
+# 메인 프로세스 함수 
 def process_document(uploaded_file, models):
     (dit_p, dit_m, ocr, obj_p, obj_m, sum_t, sum_m, emb_m) = models
     raw_img = Image.open(io.BytesIO(uploaded_file.read()))
     orig_img = raw_img.convert("RGB")
     
-    # 1. 분류
+    # 1. 문서 분류
     inputs = dit_p(images=orig_img, return_tensors="pt")
     label = dit_m.config.id2label[dit_m(**inputs).logits.argmax(-1).item()].lower()
     is_receipt = any(x in label for x in ['receipt', 'invoice'])
 
-    # 2. OCR (전담 함수 호출)
+    # 2. OCR 수행
     img_cv = cv2.cvtColor(np.array(orig_img), cv2.COLOR_RGB2BGR)
     full_text, processed_img = get_ocr_text(img_cv, ocr, is_receipt)
 
-    # 3. 문서 vs 사진 판별 및 후속 처리
+    # 3. 문서 판별 및 요약 처리
     is_doc = is_receipt or any(x in label for x in ['form', 'letter']) or len(full_text) > 40
     
     if is_doc:
         doc_type, structured_data = "Document", {}
+        
+        # [전략 변경] 영수증 외 모든 문서는 원문데이터로 전달
+        # 사유: KoBART가 요약이 의미없이 단어를 반복함. 
+        # 원문데이터 노이즈 괜찮은데, 요약이 더 안좋음.
         receipt_summary = extract_receipt_info(full_text)
         
         if is_receipt and receipt_summary:
             final_summary = f"🧾 [영수증] {receipt_summary}"
         else:
-            try:
-                # 1. 입력 범위 확장
-                start_index = 0
-                body_keywords = ['본문', '내용', '일시', '장소', '개요', '발표']
-                for k in body_keywords:
-                    idx = full_text.find(k)
-                    if idx != -1:
-                        start_index = idx
-                        break
-                
-                if start_index == 0:
-                    start_index = 200 if len(full_text) > 200 else 0
-                
-                # 더 길게 봐라 (500->800자)
-                summary_input = full_text[start_index : start_index + 800]
-                
-                s_in = sum_t([summary_input], max_length=128, return_tensors="pt", truncation=True)
-                
-                # 2. 생성 파라미터 정밀 제어: 모델이 '귀찮아서' 멈추지 못하게 강제
-                s_ids = sum_m.generate(
-                    s_in["input_ids"], 
-                    num_beams=4, 
-                    max_length=128, 
-                    min_length=40,           # 최소 40자 이상 생성 강제 (단답형 방지)
-                    repetition_penalty=2.5,  # 동일 단어(예: 날짜 등) 반복 시 강력한 페널티
-                    no_repeat_ngram_size=3   # 3단어 이상 중복 시 차단
-                )
-                final_summary = sum_t.decode(s_ids[0], skip_special_tokens=True).strip()
-            except: 
-                final_summary = f"{full_text[:30]}..."
+            final_summary = full_text[:1000].replace('\n', ' ') if len(full_text) > 1000 else full_text.replace('\n', ' ')
         
         final_keywords = ", ".join(list(dict.fromkeys([t.form for t in kiwi.tokenize(full_text) if t.tag in ['NNG', 'NNP']]))[:10])
     else:
@@ -258,7 +246,6 @@ def process_document(uploaded_file, models):
 
     embedding = emb_m.encode(full_text + " " + final_keywords).tolist()
     return (doc_type, full_text, final_summary, final_keywords, structured_data, uploaded_file.getvalue(), embedding, processed_img)
-
 
 
 # ---------------------------------------------------------
