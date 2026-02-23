@@ -190,7 +190,8 @@ def get_ocr_text(img, ocr_model, is_receipt=False):
         text = "\n".join([l[1][0] for l in res[0]]) if res and res[0] else ""
         return text, processed_img
 
-# 메인 프로세스 함수 
+
+# 메인 프로세스 함수 (보도자료 요약 생성 제어 로직 적용)
 def process_document(uploaded_file, models):
     (dit_p, dit_m, ocr, obj_p, obj_m, sum_t, sum_m, emb_m) = models
     raw_img = Image.open(io.BytesIO(uploaded_file.read()))
@@ -216,19 +217,43 @@ def process_document(uploaded_file, models):
             final_summary = f"🧾 [영수증] {receipt_summary}"
         else:
             try:
-                s_in = sum_t([full_text[:500]], max_length=128, return_tensors="pt", truncation=True)
-                s_ids = sum_m.generate(s_in["input_ids"], num_beams=4, max_length=128)
+                # 1. 입력 범위 확장
+                start_index = 0
+                body_keywords = ['본문', '내용', '일시', '장소', '개요', '발표']
+                for k in body_keywords:
+                    idx = full_text.find(k)
+                    if idx != -1:
+                        start_index = idx
+                        break
+                
+                if start_index == 0:
+                    start_index = 200 if len(full_text) > 200 else 0
+                
+                # 더 길게 봐라 (500->800자)
+                summary_input = full_text[start_index : start_index + 800]
+                
+                s_in = sum_t([summary_input], max_length=128, return_tensors="pt", truncation=True)
+                
+                # 2. 생성 파라미터 정밀 제어: 모델이 '귀찮아서' 멈추지 못하게 강제
+                s_ids = sum_m.generate(
+                    s_in["input_ids"], 
+                    num_beams=4, 
+                    max_length=128, 
+                    min_length=40,           # 최소 40자 이상 생성 강제 (단답형 방지)
+                    repetition_penalty=2.5,  # 동일 단어(예: 날짜 등) 반복 시 강력한 페널티
+                    no_repeat_ngram_size=3   # 3단어 이상 중복 시 차단
+                )
                 final_summary = sum_t.decode(s_ids[0], skip_special_tokens=True).strip()
-            except: final_summary = f"{full_text[:30]}..."
+            except: 
+                final_summary = f"{full_text[:30]}..."
         
         final_keywords = ", ".join(list(dict.fromkeys([t.form for t in kiwi.tokenize(full_text) if t.tag in ['NNG', 'NNP']]))[:10])
     else:
         doc_type = "Photo"
-        processed_img = np.array(orig_img) # 사진은 원본 반환
+        processed_img = np.array(orig_img)
         meta = extract_photo_metadata(raw_img)
-        # 객체 탐지 로직 (기존과 동일) ...
-        final_summary = f"📸 [{meta['taken_date']}] 촬영 사진" # 예시 요약
-        final_keywords = "사진, 객체" # 예시 키워드
+        final_summary = f"📸 [{meta['taken_date']}] 촬영 사진" 
+        final_keywords = "사진, 객체" 
         structured_data = {'exif': meta}
 
     embedding = emb_m.encode(full_text + " " + final_keywords).tolist()
