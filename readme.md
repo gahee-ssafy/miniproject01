@@ -71,6 +71,13 @@ pip install -r requirements.txt
 
    - 환각 현상(Hallucination): 정렬되지 않은 OCR 데이터를 KoBART에 투입할 경우 AI가 문맥을 오해하여 가상의 정보를 생성하는 오류를 발견. 이를 방지하기 위해 **'OCR 정렬 후 요약'**이라는 선결 방향을 배움.
 
+   - local과 colab의 차이를 발견: 같은 cpu 아래에서 라이브러리 버전이 달라 출력물이 다름. 따라서, ai 모델 관련해서는 colab에서 진행할 예정임.
+
+   - [중요] 향후 진행방향: 1. colab에서 작업한 폴더를 Google Drive에 올린다. - 2. ai 서버에서 모델(폴더)을 불러온다. 이때, Docker가 필요함.
+   - 왜? colab에서 라이브러리 버전 꽉 잡기 위함임. (숲으로 돌아가는 것을 방지)
+
+![colab_kobart](./ret_colab.png)
+
 # 배운점:
 
 1. 이미지 전처리 </br>
