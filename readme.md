@@ -48,10 +48,22 @@ pip install -r requirements.txt
    - 저장된 모든 문서 목록 확인
    - 각 문서의 상세 정보 열람
 
-## 주요 기능
+## 기술 스택 
+1. Frontend
+ - Streamlit: 멀티모달 인터페이스 구축
 
-- PaddleOCR 한국어 텍스트 추출 및 위치 검출
-- Streamlit 웹 기반 사용자 인터페이스
+2. Backend & Data
+ - Python: 전체 시스템 로직 설계 및 비동기 처리.
+ - SQLite: ORM(Object-Relational Mapping)을 활용한 로컬 데이터베이스 스키마 설계 및 관리.
+ - Kiwi (Kiwipiepy): 한국어 형태소 분석을 통한 핵심 명사(Keywords) 추출 및 데이터 정제.
+OpenCV (cv2): OCR 인식률 향상을 위한 이미지 이진화, 확대, 노이즈 제거 등 컴퓨터 비전 전처리.
+
+3. Artificial Intelligence & Deep Learning
+ - PyTorch (torch): KoBART 기반 문서 요약 모델의 추론(Inference) 엔진 제어, 텐서(Tensor) 규격화 및 하드웨어 자원 할당 관리.
+ - PaddlePaddle (PaddleOCR): 이미지 전처리
+ - Hugging Face (Transformers): 사전 학습된(Pre-trained) KoBART 모델 로드 및 토크나이징(Tokenization) 처리.
+ - Sentence-Transformers: 문서 및 키워드 데이터의 임베딩(Embedding) 생성 및 벡터화.
+
 
 # [핵심 기술적 성과: OCR Pipeline]
 
