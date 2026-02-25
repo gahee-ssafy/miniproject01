@@ -233,9 +233,7 @@ def process_document(uploaded_file, models):
         if is_receipt and receipt_summary:
             final_summary = f"🧾 [영수증] {receipt_summary}"
         else:
-            final_summary = full_text[:1000].replace('\n', ' ') if len(full_text) > 1000 else full_text.replace('\n', ' ')
-        
-        final_keywords = ", ".join(list(dict.fromkeys([t.form for t in kiwi.tokenize(full_text) if t.tag in ['NNG', 'NNP']]))[:10])
+            final_summary = full_text[:1000]
     else:
         doc_type = "Photo"
         processed_img = np.array(orig_img)
@@ -283,16 +281,27 @@ with t1:
             st.success("저장 완료!")
 
 with t2:
-    q = st.text_input("검색어 (객체, 장소, 내용 등)")
+    q = st.text_input("검색어 입력 (키워드 전용)")
     if q:
         with Session(engine) as session:
-            results = session.exec(select(Document).where((Document.content.contains(q)) | (Document.keywords.contains(q)))).all()
-            for d in results:
-                with st.expander(f"📄 {d.filename} ({d.doc_type})"):
-                    sc1, sc2 = st.columns([1, 3])
-                    sc1.image(d.image_data)
-                    sc2.write(f"**요약:** {d.summary}")
-                    sc2.write(f"**키워드:** `{d.keywords}`")
+            # Document.keywords 필드에서 사용자의 입력값이 포함된 데이터만 필터링
+            statement = select(Document).where(Document.keywords.contains(q))
+            results = session.exec(statement).all()
+            
+            if results:
+                st.success(f"'{q}' 키워드로 {len(results)}건의 데이터를 찾았습니다.")
+                for d in results:
+                    with st.expander(f"📄 {d.filename}"):
+                        c1, c2 = st.columns([1, 2])
+                        c1.image(d.image_data, use_container_width=True)
+                        c2.write(f"**추출된 키워드:** `{d.keywords}`")
+                        c2.write(f"**요약 정보:** {d.summary}")
+            else:
+                st.warning(f"'{q}'와(과) 일치하는 키워드가 아카이브에 없습니다.")
+                # 실제 DB에 어떤 키워드들이 저장되어 있는지 힌트 제공 (디버깅용)
+                all_keywords = session.exec(select(Document.keywords)).all()
+                st.write("💡 현재 저장된 전체 키워드 예시:", ", ".join(list(set(all_keywords))[:5]))
+                
 
 with t3:
     with Session(engine) as session:
@@ -307,11 +316,46 @@ with t3:
                     session.delete(item); session.commit(); st.rerun()
 
 with t4:
-    st.header("📍 사진 촬영 위치")
+    st.header("📍 사진 촬영 위치 (JSON 데이터 분석)")
     with Session(engine) as session:
-        # 오류 해결: st.all_docs가 아니라 변수에 데이터를 담아 함수에 전달해야 함
         all_docs = session.exec(select(Document)).all()
+        
         if all_docs:
-            # display_photo_locations 함수를 호출 (all_docs 인자 전달)
-            # (해당 함수 내에서 lat/lng 추출 로직이 d.structured_data를 파싱하도록 되어 있는지 확인 필요)
-            st.info(f"현재 {len(all_docs)}개의 데이터가 아카이브에 있습니다.")
+            valid_locations = []
+            for doc in all_docs:
+                try:
+                    # 1. 저장된 문자열 데이터를 딕셔너리로 변환
+                    # 만약 이미 딕셔너리 형태라면 json.loads 없이 바로 사용
+                    data = json.loads(doc.structured_data) if isinstance(doc.structured_data, str) else doc.structured_data
+                    
+                    # 2. 데이터 구조에 따라 위경도 추출
+                    exif = data.get('exif', {})
+                    lat = exif.get('lat')
+                    lng = exif.get('lng')
+                    
+                    if lat and lng:
+                        valid_locations.append({
+                            'lat': lat, 
+                            'lng': lng, 
+                            'name': doc.filename,
+                            'address': exif.get('location_address', '주소 정보 없음')
+                        })
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    continue
+
+            if valid_locations:
+                st.info(f"좌표 정보가 확인된 {len(valid_locations)}개의 마커를 표시합니다.")
+                
+                # 지도 생성 (첫 번째 데이터 기준)
+                m = folium.Map(location=[valid_locations[0]['lat'], valid_locations[0]['lng']], zoom_start=14)
+                
+                for loc in valid_locations:
+                    folium.Marker(
+                        [loc['lat'], loc['lng']], 
+                        popup=f"<b>{loc['name']}</b><br>{loc['address']}",
+                        tooltip=loc['name']
+                    ).add_to(m)
+                
+                st_folium(m, width=700, height=500)
+            else:
+                st.warning("위치 정보가 포함된 JSON 데이터가 없습니다.")
